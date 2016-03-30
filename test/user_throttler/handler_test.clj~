@@ -1,0 +1,19 @@
+(ns user-throttler.handler-test
+  (:require [expectations :refer :all]
+            [ring.mock.request :as mock]
+            [user-throttler.handler :refer :all]
+            [datomic.api :as d]))
+
+(expect "Hello World"
+    (let [response (app (mock/request :get "/"))]
+      (:body response)))
+
+(expect 404
+    (let [response (app (mock/request :get "/invalid"))]
+      (:status response)))
+
+(expect false
+        (do
+          (ensure-db)
+          (nil? conn)))
+

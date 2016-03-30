@@ -1,0 +1,29 @@
+[
+{:db/id #db/id[:db.part/db]
+ :db/ident :user/name
+ :db/valueType :db.type/string
+ :db/cardinality :db.cardinality/one
+ :db/doc "A user's username"
+ :db.install/_attribute :db.part/db}
+
+{:db/id #db/id[:db.part/db]
+ :db/ident :user/maxPerHour
+ :db/valueType :db.type/bigint
+ :db/cardinality :db.cardinality/one
+ :db/doc "The maximum nr of requests that this user may make per hour"
+ :db.install/_attribute :db.part/db}
+
+{:db/id #db/id[:db.part/db]
+ :db/ident :request/url
+ :db/valueType :db.type/string
+ :db/cardinality :db.cardinality/one
+ :db/doc "the resource the user is trying to request"
+ :db.install/_attribute :db.part/db}
+
+{:db/id #db/id[:db.part/db]
+ :db/ident :request/userId
+ :db/valueType :db.type/ref
+ :db/cardinality :db.cardinality/one
+ :db/doc "the user that is requesting this thing"
+ :db.install/_attribute :db.part/db}
+]
