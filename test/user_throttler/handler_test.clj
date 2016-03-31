@@ -30,30 +30,35 @@
           (ensure-db)
           (nil? conn)))
 
+;; helper function that lets us extract the name, we dont need the id's
+;; as they cannot be foreseen
+(defn get-name [data]
+  (get data 1))
+
 ;; adding one user should return him
-(expect #{["John"]}
+(expect #{"John"}
         (with-redefs [conn (create-empty-in-memory-db)]
         (do
-          (add-user "John")
-          (find-all-users)))
+          (add-new-user "John" "0" 0N 0N)
+          (let [all-users (find-all-users)]
+            (into #{} (into [] (map get-name (find-all-users)))))))
 )
 
 ;; adding a bunch of owners should return them all
-(expect #{["John"] ["Paul"] ["Ringo"]}
+(expect #{"John" "Paul" "Ringo"}
         (with-redefs [conn (create-empty-in-memory-db)]
         (do
-          (add-user "John")
-          (add-user "Paul")
-          (add-user "Ringo")
-          (find-all-users)))
+          (add-new-user "John" "0" 0N 0N)
+          (add-new-user "Paul" "1" 0N 0N)
+          (add-new-user "Ringo" "2" 0N 0N)
+          (into #{} (into [] (map get-name (find-all-users))))))
 )
 
 ;; adding quota for a user should allow us to find them
-(expect #{[(.toBigInteger 500N)]}
+(expect #{[(.toBigInteger 500N) (.toBigInteger 500N)]}
         (with-redefs [conn (create-empty-in-memory-db)]
           (do
-            (add-user "John")
-            (add-user-quota "John" 500N)
+            (add-new-user "John" "1" 500N 500N)
             (find-quota-for-user "John")
           )))
 
@@ -62,8 +67,7 @@
 (expect false
         (with-redefs [conn (create-empty-in-memory-db)]
           (do
-            (add-user "John")
-            (add-user-quota "John" 0N)
+            (add-new-user "John" "1" 0N 0N)
             (has-requests-left "John")
           )))
 
@@ -71,8 +75,7 @@
 (expect true
         (with-redefs [conn (create-empty-in-memory-db)]
           (do
-            (add-user "John")
-            (add-user-quota "John" 1000N)
+            (add-new-user "John" "1" 1000N 1000N)
             (has-requests-left "John")
           )))
 
@@ -81,8 +84,7 @@
 (expect false
         (with-redefs [conn (create-empty-in-memory-db)]
           (do
-            (add-user "John")
-            (add-user-quota "John" 1N)
+            (add-new-user "John" "1" 1N 1N)
             (add-user-request "John" "test-request")
             (has-requests-left "John")
           )))
@@ -91,8 +93,7 @@
 (expect 3
         (with-redefs [conn (create-empty-in-memory-db)]
           (do
-            (add-user "John")
-            (add-user-quota "John" 100N)
+            (add-new-user "John" "1" 100N 100N)
             (add-user-request "John" "test-request")
             (add-user-request "John" "test-request")
             (add-user-request "John" "test-request")
@@ -104,8 +105,7 @@
 (expect #{["songs"] ["albums"] ["live-cds"]}
         (with-redefs [conn (create-empty-in-memory-db)]
         (do
-            (add-user "John")
-            (add-user-quota "John" 100N)
+            (add-new-user "John" "1" 100N 100N)
             (add-user-request "John" "songs")
             (add-user-request "John" "albums")
             (add-user-request "John" "live-cds")

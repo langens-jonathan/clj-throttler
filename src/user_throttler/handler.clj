@@ -1,7 +1,9 @@
 (ns user-throttler.handler
   (:require [compojure.core :refer :all]
             [compojure.route :as route]
-            [ring.middleware.defaults :refer [wrap-defaults site-defaults]]
+;            [ring.middleware.defaults :refer [wrap-defaults site-defaults]]
+            [compojure.handler :as handler]
+            [ring.middleware.json :as middleware]
             ;; this is for datomic!
             [datomic.api :as d]
             [clojure.java.io :as io]
@@ -13,12 +15,48 @@
             ))
 
 
-;;;;;; DATOMIC SCHEMA SECTION ;;;;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; PROXY SHIZZLE
+(def base-url "http://jsonplaceholder.typicode.com")
+
+(defn proxy-get
+  "This function will proxy the rest api call to where it has to go"
+  [url-suffix]
+  (client/get (str base-url "/" url-suffix)))
+
+;;; DATABASE CONNECTION SHIZZLE
 ;(def db-uri-base "datomic:mem://testdb")
 (def db-uri-base "datomic:free://localhost:4334/users")
 
 (def conn nil)
+
+(defn add-new-user [user-name uuid hourly dayly]
+  (let [user-id (d/tempid :db.part/user)]
+    @(d/transact conn [{:db/id user-id :user/name user-name}
+                       {:db/id user-id :user/uuid uuid}
+                      {:db/id user-id :user/maxPerHour hourly}
+                      {:db/id user-id :user/maxPerDay dayly}])))
+
+(defn populate []
+  (add-new-user "default" "1" 10N 100N)
+  (add-new-user "jonathan" "2" 100N 1000N)
+  (add-new-user "sevelientje" "3" 1N 10N)
+)
+
+(defn reset-database []
+  (d/delete-database db-uri-base)
+  (d/create-database db-uri-base)
+  (def conn (d/connect db-uri-base))
+  (d/transact conn (load-file "resources/datomic/schema.edn"))
+  (populate)
+)
+
+(defn create-database []
+  (def conn (d/connect db-uri-base))
+)
+
+(defn ensure-db []
+  (if (nil? conn)
+    (create-database)))
 
 ;;;;;;; DATOMIC SECTION ;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -62,13 +100,13 @@
        (d/db conn)
        user-name))
 
-
 (defn find-quota-for-user [user-name]
-  (d/q '[:find ?hourly
+  (d/q '[:find ?hourly ?dayly
          :in $ ?user-name
          :where 
          [?user-id :user/name ?user-name]
          [?user-id :user/maxPerHour ?hourly]
+         [?user-id :user/maxPerDay ?dayly]
         ]
        (d/db conn)
        user-name))
@@ -91,49 +129,34 @@
 ;;          ]
 ;;        (d/db conn)))
 
-(defn add-new-user [user-name hourly dayly]
-  (let [user-id (d/tempid :db.part/user)]
-    @(d/transact conn [{:db/id user-id :user/name user-name}
-                      {:db/id user-id :user/maxPerHour hourly}
-                      {:db/id user-id :user/maxPerDay dayly}])))
 (defn find-all-users []
-  (d/q '[:find ?user-id ?user-name ?hourly ?dayly
+  (d/q '[:find ?user-id ?user-name ?uuid ?hourly ?dayly
          :where
          [?user-id :user/name ?user-name]
+         [?user-id :user/uuid ?uuid]
          [?user-id :user/maxPerHour ?hourly]
          [?user-id :user/maxPerDay ?dayly]
          ]
          (d/db conn)))
 
-(defn create-new-user [user-name hourly dayly]
-  @(d/transact conn
-               (let [id (d/tempid :db.part/user)]
-                 {:db/id id :user/name user-name}
-                 {:db/id id :user/maxPerHour hourly})))
-          
-;; (defn _find-name-for-user-with-id [user-id]
-;;   (d/q '[:find ?user-name
-;;          :in $ ?user-id
-;;          :where
-;;          [?user-id :user/name ?user-name]
-;;         ]
-;;        (d/db conn)
-;;        user-id))
+(defn find-user [uuid]
+  (d/q '[:find ?user-id ?user-name ?uuid ?hourly ?dayly
+         :in $ ?uuid
+         :where
+         [?user-id :user/name ?user-name]
+         [?user-id :user/uuid ?uuid]
+         [?user-id :user/maxPerHour ?hourly]
+         [?user-id :user/maxPerDay ?dayly]
+         ]
+       (d/db conn)
+       uuid))
 
-;; (defn _find-hourly-for-user-with-id [user-id]
-;;   (d/q '[:find ?hourly
-;;          :in $ ?user-id
-;;          :where
-;;          [?user-id :user/maxPerHour ?hourly]
-;;         ]
-;;        (d/db conn)
-;;        user-id))
-
-(defn _construct-user [[user-id user-name hourly dayly]]
+(defn _construct-user [[user-id user-name uuid hourly dayly]]
   (let 
       [new-user {
                  :id user-id
                  :name user-name
+                 :uuid uuid
                  :maxPerHour hourly
                  :maxPerDay dayly
                  }]
@@ -143,59 +166,28 @@
   (cheshire/generate-string (map _construct-user (find-all-users)))
 )
 
+(defn get-user [id]
+  (cheshire/generate-string (_construct-user (first (find-user id)))))
+
+(defn update-user [id]
+  )
+
+(defn delete-user [id]
+  )
+
+(defn insert-new-user [body]
+  (ensure-db)
+  (add-new-user (get body "name")
+                (get body "uuid")
+                (bigint (get body "maxPerHour"))
+                (bigint  (get body "maxPerDay")))
+  (get-user (get body "uuid"))
+)
+
 (defn test-function [user-name]
   (let [user-list (find-all-users)]
     (println user-list)
     user-list))
-
-(defn reset-database []
-  (d/delete-database db-uri-base)
-  (d/create-database db-uri-base)
-  (def conn (d/connect db-uri-base))
-  (d/transact conn (load-file "resources/datomic/schema.edn"))
-  (populate)
-)
-
-(defn populate []
-  (add-new-user "default" 10N 100N)
-  (add-new-user "jonathan" 50N 1000N)
-  (add-new-user "sevelientje" 1N 10N))
-
-(defn create-database []
-  ;(d/delete-database db-uri-base)
-  ;(d/create-database db-uri-base)
-  (def conn (d/connect db-uri-base))
-  ;(d/transact conn (load-file "resources/datomic/schema.edn"))
-  ;(populate)
-)
-
-(defn ensure-db []
-  (if (nil? conn)
-    (create-database)))
-
-(defn access-db
-  []
-  (do
-    (ensure-db)
-    (println (str "Jonathans id: " (find-user-id "jonathan")))
-    (add-user-request "jonathan" "datomic")
-    (print (str (count (find-request-ids-for-user "jonathan")) "/"))
-    (println (str (find-quota-for-user "jonathan")))
-    (println (str "has more requests left: " (has-requests-left "jonathan")))
-    (str (find-request-ids-for-user "jonathan"))
-    ))
-
-(defn has-more-access-left
-  "returns { moreAccessLeft: true; } when the user with the passed token has more acess left"
-  [headers params body]
-  (str "HEADERS: " headers "\nPARAMS: " params "\nBODY: " body))
-
-(def base-url "http://jsonplaceholder.typicode.com")
-
-(defn proxy-get
-  "This function will proxy the rest api call to where it has to go"
-  [url-suffix]
-  (client/get (str base-url "/" url-suffix)))
 
 ;;;;;;; END OF DATOMIC ;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -206,10 +198,14 @@
 (defroutes app-routes
   (GET "/" [] "Hello World")
   (GET "/reset" [] (reset-database))
-  (GET "/users" [] (construct-all-users))
+  (GET "/users" [] (do
+                     (ensure-db)
+                     (construct-all-users)))
   (POST "/users" {body :body} (insert-new-user body))
   (context "/users/:id" [id] (defroutes user-routes
-      (GET "/" [] (get-user id))
+      (GET "/" [] (do
+                    (ensure-db)
+                    (get-user id)))
       (PUT "/" {body :body} (update-user body))
       (DELETE "/" [] (delete-user id))))
   (POST "/users"
@@ -220,16 +216,21 @@
   (GET "/posts" [] (proxy-get "posts"))
   (GET "/albums" [] (proxy-get "albums"))
   (GET "/todos" [] (proxy-get "todos"))
-  (GET "/datomic" [] (access-db))
   (POST "/" 
         {:keys [headers params body] :as request}  
-        (has-more-access-left headers params body))
+        (str headers params body))
   (route/not-found "Not Found"))
 
 ;;(def app
 ;;  (wrap-defaults app-routes (assoc-in site-defaults [:security :anti-forgery] false)))
+
+;; (def app
+;;   (wrap-json-response app-routes))
+
 (def app
-  (wrap-json-response app-routes))
+      (-> (handler/api app-routes)
+        (middleware/wrap-json-body)
+        (middleware/wrap-json-response)))
 
 
 ;;;;;;;; END OF COMPOJURE ;;;;;;;;;
