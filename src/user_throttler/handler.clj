@@ -1,27 +1,20 @@
 (ns user-throttler.handler
   (:require [compojure.core :refer :all]
             [compojure.route :as route]
-;            [ring.middleware.defaults :refer [wrap-defaults site-defaults]]
             [compojure.handler :as handler]
             [ring.middleware.json :as middleware]
-            ;; this is for datomic!
             [datomic.api :as d]
             [clojure.java.io :as io]
             [ring.middleware.json :refer [wrap-json-response]]
             [ring.util.response :refer [response]]
             [clj-http.client :as client]
+            [clj-time.core :as time]
             [cheshire.core :as cheshire]
-            ;[datomic-schema.schema :refer :all]
             ))
 
-
-;; PROXY SHIZZLE
-(def base-url "http://jsonplaceholder.typicode.com")
-
-(defn proxy-get
-  "This function will proxy the rest api call to where it has to go"
-  [url-suffix]
-  (client/get (str base-url "/" url-suffix)))
+;; DEFAULT USER SETTINGS
+(def default-user-hourly 20N)
+(def default-user-dayly 100N)
 
 ;;; DATABASE CONNECTION SHIZZLE
 ;(def db-uri-base "datomic:mem://testdb")
@@ -37,9 +30,7 @@
                       {:db/id user-id :user/maxPerDay dayly}])))
 
 (defn populate []
-  (add-new-user "default" "1" 10N 100N)
-  (add-new-user "jonathan" "2" 100N 1000N)
-  (add-new-user "sevelientje" "3" 1N 10N)
+  (add-new-user "default" "0" default-user-hourly default-user-dayly)
 )
 
 (defn reset-database []
@@ -58,76 +49,97 @@
   (if (nil? conn)
     (create-database)))
 
+(defn get-uuid-for-logged-in-user [request]
+  "1")
+
 ;;;;;;; DATOMIC SECTION ;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;; creating the database
-(defn find-user-id [user-name]
-  (d/q '[:find ?user-id
-         :in $ ?user-name
-         :where
-         [?user-id :user/name ?user-name]
-        ]
-       (d/db conn)
-       user-name))
-
-(defn add-user-request [user-name target]
+(defn add-user-request [uuid target]
   (let [access-uri (d/tempid :db.part/user)]
     @(d/transact conn [{:db/id access-uri
                         :request/url target}
                        {:db/id access-uri
-                        :request/userId (ffirst (find-user-id user-name))}
+                        :request/userId [:user/uuid uuid]}
                       ])))
 
-(defn find-request-ids-for-user [user-name]
+(defn find-request-ids-for-user [uuid]
   (d/q '[:find ?request-id
-         :in $ ?user-name
+         :in $ ?uuid
          :where
-         [?user-id :user/name ?user-name]
+         [?user-id :user/uuid ?uuid]
          [?request-id :request/userId ?user-id]
         ]
        (d/db conn)
-       user-name))
+       uuid))
 
-(defn find-all-requests-for-user [user-name]
-  (d/q '[:find ?request-url
-         :in $ ?user-name
+(defn find-all-requests-for-user [uuid]
+  (d/q '[:find ?request-id ?request-url
+         :in $ ?uuid
          :where
-         [?user-id :user/name ?user-name]
+         [?user-id :user/uuid ?uuid]
          [?request-id :request/userId ?user-id]
          [?request-id :request/url ?request-url]
         ]
        (d/db conn)
-       user-name))
+       uuid))
 
-(defn find-quota-for-user [user-name]
+(defn find-all-requests []
+  (d/q '[:find ?request-id ?request-url
+         :where
+         [?request-id :request/url ?request-url]
+        ]
+       (d/db conn)))
+
+(defn find-quota-for-user [uuid]
   (d/q '[:find ?hourly ?dayly
-         :in $ ?user-name
+         :in $ ?uuid
          :where 
-         [?user-id :user/name ?user-name]
+         [?user-id :user/uuid ?uuid]
          [?user-id :user/maxPerHour ?hourly]
          [?user-id :user/maxPerDay ?dayly]
         ]
        (d/db conn)
-       user-name))
+       uuid))
 
-(defn has-requests-left [user-name]
-  (< (count (find-request-ids-for-user user-name)) (ffirst (find-quota-for-user user-name))))
+(defn find-requests-for-user-in-last-hour [uuid]
+  (d/q '[:find ?request-id
+         :in $ ?uuid
+         :where
+         [?user-id :user/uuid ?uuid]
+         [?request-id :request/userId ?user-id ?transaction-id]
+         [?transaction-id :db/txInstant ?timestamp]
+         [(> (- (time/now) ?timestamp) 3600)]
+         ]
+       (d/db conn)
+       uuid))
 
-;; (defn add-user [user-name]
-;;   @(d/transact conn [{:db/id (d/tempid :db.part/user)
-;;                       :user/name user-name}]))
+(defn find-requests-for-user-in-last-day [uuid]
+  (d/q '[:find ?request-id
+         :in $ ?uuid
+         :where
+         [?user-id :user/uuid ?uuid]
+         [?request-id :request/userId ?user-id ?transaction-id]
+         [?transaction-id :db/txInstant ?timestamp]
+         [(> (- (time/now) ?timestamp) (* 24 3600))]
+         ]
+       (d/db conn)
+       uuid))
 
-;; (defn add-user-quota [user-name hourly]
-;;   @(d/transact conn [{:db/id (ffirst (find-user-id user-name))
-;;                       :user/maxPerHour (.toBigInteger hourly)}]))
+;; (defn has-requests-left [uuid]
+;;   (< (count (find-request-ids-for-user uuid)) (ffirst (find-quota-for-user uuid))))
 
-;; (defn find-all-users []
-;;   (d/q '[:find ?user-name
-;;          :where
-;;          [?user-id :user/name ?user-name]
-;;          ]
-;;        (d/db conn)))
+(defn has-requests-left [uuid]
+  (let [quota (seq (first (find-quota-for-user uuid)))
+        hourly (first quota)
+        dayly (first (rest quota))]
+    (do
+      (println "last hours requests: " (count (find-requests-for-user-in-last-hour uuid)))
+      (println "hourly limit: " hourly)
+;      (println "last days requests: " (count (find-requests-for-user-in-last-day uuid)))
+      (println "dayly limitL " dayly)
+      true
+      )))
 
 (defn find-all-users []
   (d/q '[:find ?user-id ?user-name ?uuid ?hourly ?dayly
@@ -151,12 +163,20 @@
        (d/db conn)
        uuid))
 
+(defn _construct-request [[request-id request-url]]
+  (let
+      [new-request {
+                    :id request-id
+                    :url request-url
+                    }]
+    new-request))
+
 (defn _construct-user [[user-id user-name uuid hourly dayly]]
   (let 
       [new-user {
-                 :id user-id
+;                 :db-id user-id
+                 :id uuid
                  :name user-name
-                 :uuid uuid
                  :maxPerHour hourly
                  :maxPerDay dayly
                  }]
@@ -169,11 +189,39 @@
 (defn get-user [id]
   (cheshire/generate-string (_construct-user (first (find-user id)))))
 
-(defn update-user [id]
-  )
+(def not-nil? (complement nil?))
 
+(defn diff-helper [map1 map2 key]
+  (if (= (get map1 key) (get map2 key))
+    nil
+    (get map2 key)))
+
+(defn diff [map1 map2]
+  (assoc {} :maxPerHour (diff-helper map1 map2 :maxPerHour) :maxPerDay (diff-helper map1 map2 :maxPerDay)))
+
+(defn update-user [id body]
+  (ensure-db)
+  ;@(d/transact conn
+  (let [diff-map (diff (_construct-user (first (find-user id)))
+                        {:maxPerHour (get body "maxPerHour")  :maxPerDay (get body "maxPerDay")})]
+    (if (and (not-nil? (get diff-map :maxPerHour)) (not-nil? (get diff-map :maxPerDay)))
+      @(d/transact conn
+                  [{:db/id [:user/uuid id] :user/maxPerHour (bigint (get diff-map :maxPerHour))}
+                   {:db/id [:user/uuid id] :user/maxPerDay (bigint (get diff-map :maxPerDay))}])
+      (if (not-nil? (get diff-map :maxPerHour))
+        @(d/transact conn [{:db/id [:user/uuid id] :user/maxPerHour (bigint (get diff-map :maxPerHour))}])
+        (if (not-nil? (get diff-map :maxPerDay))
+          @(d/transact conn [{:db/id [:user/uuid id] :user/maxPerDay (bigint (get diff-map :maxPerDay))}]))))))
+
+(defn update-user-only-body [body]
+  (update-user (get body "uuid") body))
+                 
 (defn delete-user [id]
   )
+
+(defn get-all-requests []
+  (cheshire/generate-string (map _construct-request (find-all-requests))))
+  
 
 (defn insert-new-user [body]
   (ensure-db)
@@ -184,13 +232,24 @@
   (get-user (get body "uuid"))
 )
 
-(defn test-function [user-name]
-  (let [user-list (find-all-users)]
-    (println user-list)
-    user-list))
-
-;;;;;;; END OF DATOMIC ;;;;;;;;
+;;;;;;; PROXY SECTION ;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; PROXY SHIZZLE
+(def base-url "http://jsonplaceholder.typicode.com")
+
+(defn proxy-get
+  "This function will proxy the rest api call to where it has to go"
+  [url-suffix]
+  (do
+    (ensure-db)
+    (if (has-requests-left (get-uuid-for-logged-in-user nil))
+      (do
+        (add-user-request (get-uuid-for-logged-in-user "jonathan") url-suffix)
+        (client/get (str base-url "/" url-suffix)))
+      (do
+        "OUT OF REQUESTS")
+      )))
 
 ;;;;;;; COMPOJURE SECTION ;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -198,21 +257,22 @@
 (defroutes app-routes
   (GET "/" [] "Hello World")
   (GET "/reset" [] (reset-database))
+  (GET "/requests" []
+       (do
+         (ensure-db)
+         (get-all-requests)
+         ))
   (GET "/users" [] (do
                      (ensure-db)
                      (construct-all-users)))
   (POST "/users" {body :body} (insert-new-user body))
+  (PUT "/users" {body :body} (update-user-only-body body))
   (context "/users/:id" [id] (defroutes user-routes
       (GET "/" [] (do
                     (ensure-db)
                     (get-user id)))
-      (PUT "/" {body :body} (update-user body))
+      (PUT "/" {body :body} (update-user id body))
       (DELETE "/" [] (delete-user id))))
-  (POST "/users"
-        {:keys [params]}
-        (do
-          (println (str params))
-          (str params)))
   (GET "/posts" [] (proxy-get "posts"))
   (GET "/albums" [] (proxy-get "albums"))
   (GET "/todos" [] (proxy-get "todos"))
@@ -220,12 +280,6 @@
         {:keys [headers params body] :as request}  
         (str headers params body))
   (route/not-found "Not Found"))
-
-;;(def app
-;;  (wrap-defaults app-routes (assoc-in site-defaults [:security :anti-forgery] false)))
-
-;; (def app
-;;   (wrap-json-response app-routes))
 
 (def app
       (-> (handler/api app-routes)
