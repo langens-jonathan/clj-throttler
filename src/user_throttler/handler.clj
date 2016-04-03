@@ -9,6 +9,7 @@
             [ring.util.response :refer [response]]
             [clj-http.client :as client]
             [clj-time.core :as time]
+            [clj-time.local :as local-time]
             [cheshire.core :as cheshire]
             ))
 
@@ -50,7 +51,7 @@
     (create-database)))
 
 (defn get-uuid-for-logged-in-user [request]
-  "1")
+  "0")
 
 ;;;;;;; DATOMIC SECTION ;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -84,6 +85,17 @@
        (d/db conn)
        uuid))
 
+(defn find-all-request-times-for-user [uuid]
+  (d/q '[:find ?ts
+         :in $ ?uuid
+         :where
+         [?user-id :user/uuid ?uuid]
+         [?request-id :request/userId ?user-id ?tr]
+         [?tr :db/txInstant ?ts]
+        ]
+       (d/db conn)
+       uuid))
+
 (defn find-all-requests []
   (d/q '[:find ?request-id ?request-url
          :where
@@ -101,45 +113,6 @@
         ]
        (d/db conn)
        uuid))
-
-(defn find-requests-for-user-in-last-hour [uuid]
-  (d/q '[:find ?request-id
-         :in $ ?uuid
-         :where
-         [?user-id :user/uuid ?uuid]
-         [?request-id :request/userId ?user-id ?transaction-id]
-         [?transaction-id :db/txInstant ?timestamp]
-         [(> (- (time/now) ?timestamp) 3600)]
-         ]
-       (d/db conn)
-       uuid))
-
-(defn find-requests-for-user-in-last-day [uuid]
-  (d/q '[:find ?request-id
-         :in $ ?uuid
-         :where
-         [?user-id :user/uuid ?uuid]
-         [?request-id :request/userId ?user-id ?transaction-id]
-         [?transaction-id :db/txInstant ?timestamp]
-         [(> (- (time/now) ?timestamp) (* 24 3600))]
-         ]
-       (d/db conn)
-       uuid))
-
-;; (defn has-requests-left [uuid]
-;;   (< (count (find-request-ids-for-user uuid)) (ffirst (find-quota-for-user uuid))))
-
-(defn has-requests-left [uuid]
-  (let [quota (seq (first (find-quota-for-user uuid)))
-        hourly (first quota)
-        dayly (first (rest quota))]
-    (do
-      (println "last hours requests: " (count (find-requests-for-user-in-last-hour uuid)))
-      (println "hourly limit: " hourly)
-;      (println "last days requests: " (count (find-requests-for-user-in-last-day uuid)))
-      (println "dayly limitL " dayly)
-      true
-      )))
 
 (defn find-all-users []
   (d/q '[:find ?user-id ?user-name ?uuid ?hourly ?dayly
@@ -231,6 +204,36 @@
                 (bigint  (get body "maxPerDay")))
   (get-user (get body "uuid"))
 )
+
+(defn map-filter [transaction-date]
+  (println transaction-date))
+
+(defn filter-time [hash processed time]
+  (if (nil? (first hash))
+    processed
+    (do
+      (if (> (- (- (.getTime (new java.util.Date)) (* time 3600000)) (.getTime (first (first hash)))) 0)
+        (filter-time (rest hash) processed time)
+        (filter-time (rest hash) (into processed (first hash)) time)
+      ))))
+
+(defn requests-for-user-in-last-hour [uuid]
+  (count (filter-time (find-all-request-times-for-user uuid) [] 1)))
+
+(defn requests-for-user-in-last-day [uuid]
+  (count (filter-time (find-all-request-times-for-user uuid) [] 24)))
+
+(defn has-requests-left [uuid]
+  (let [quota (seq (first (find-quota-for-user uuid)))
+        hourly (first quota)
+        dayly (first (rest quota))]
+    (do
+      (print "[*] user quota for user uuid(" uuid ") ")
+      (print "hourly: " (requests-for-user-in-last-hour uuid) "/"  hourly " ")
+      (println "dayly: " (requests-for-user-in-last-day uuid) "/" dayly)
+      (and (<= (requests-for-user-in-last-hour uuid) hourly)
+          (<= (requests-for-user-in-last-day uuid) dayly)
+      ))))
 
 ;;;;;;; PROXY SECTION ;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
