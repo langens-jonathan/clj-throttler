@@ -1,4 +1,4 @@
-# mu-clj-throttler
+# clj-throttler
 a REST API service that proxies to other REST API services but enforces request limits for users
 
 ## starting up the service
